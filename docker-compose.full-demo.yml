@@ -1,0 +1,124 @@
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.4.1
+    container_name: zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+    ports:
+      - "2181:2181"
+    networks:
+      - kafka-net
+
+  kafka1:
+    image: confluentinc/cp-kafka:7.4.1
+    container_name: kafka1
+    depends_on:
+      - zookeeper
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+
+      # INTERNAL broker listener (for other containers)
+      KAFKA_LISTENERS: PLAINTEXT://kafka1:29092,PLAINTEXT_HOST://0.0.0.0:9092
+
+      # ADVERTISED for internal + external
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka1:29092,PLAINTEXT_HOST://localhost:9092
+
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+
+      # FIX: Prevent lingering Zookeeper sessions
+      KAFKA_ZOOKEEPER_SESSION_TIMEOUT_MS: 6000
+      KAFKA_ZOOKEEPER_CONNECTION_TIMEOUT_MS: 6000
+
+    command: >
+      bash -c "
+        echo 'Cleaning stale Zookeeper broker registration...' ;
+        /usr/bin/zookeeper-shell zookeeper:2181 <<< \"delete /brokers/ids/1\" || true ;
+        /etc/confluent/docker/run
+      "
+
+    ports:
+      - "9092:9092"
+
+    volumes:
+      - kafka1-data:/var/lib/kafka/data
+
+    networks:
+      - kafka-net
+
+
+  ipfs:
+    image: ipfs/kubo:latest
+    container_name: ipfs
+    ports:
+      - "5001:5001"
+    networks:
+      - kafka-net
+
+  # -------------------------
+  # PYTHON SERVICES
+  # -------------------------
+
+  producer:
+    build:
+      context: ./apas-pipeline/services/producer
+    container_name: producer
+    depends_on:
+      - kafka1
+    networks:
+      - kafka-net
+
+  nidd:
+    build:
+      context: ./apas-pipeline/services/nidd
+    container_name: nidd
+    depends_on:
+      - kafka1
+    networks:
+      - kafka-net
+
+  provenance:
+    build:
+      context: ./apas-pipeline/services/provenance
+    container_name: provenance
+    depends_on:
+      - kafka1
+      - ipfs
+    networks:
+      - kafka-net
+
+  cipos:
+    build:
+      context: ./apas-pipeline/services/cipos
+    container_name: cipos
+    depends_on:
+      - kafka1
+    networks:
+      - kafka-net
+
+  # -------------------------
+  # KAFKA UI
+  # -------------------------
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: kafka-ui
+    ports:
+      - "8081:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka1:29092
+    depends_on:
+      - kafka1
+    networks:
+      - kafka-net
+
+networks:
+  kafka-net:
+    driver: bridge
+
+volumes:
+  kafka1-data:
